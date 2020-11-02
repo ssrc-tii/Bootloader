@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2012-2014 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2020 Technology Innovation Institute. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -31,62 +31,45 @@
  *
  ****************************************************************************/
 
-/**
- * @file crypto.c
- *
- * Wrapper for the crytpo stuff.
- *
- */
-
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "hw_config.h"
-#include "public_key.h"
-#include "monocypher/src/monocypher.h"
+#include "image_toc.h"
 
-#include "crypto.h"
+#include "bl.h"
 
-//prevents compile errors with non crypto btl
-#ifndef APP_MEM_AREA_START
- #define APP_MEM_AREA_START APP_LOAD_ADDRESS
-#endif
-
-//data structure representing the meta data header of crypto images
-struct meta_data
+bool find_toc(const image_toc_entry_t **toc_entries, uint8_t *len)
 {
-	size_t app_len;
-	uint8_t signature[64];
-};
+	const uint32_t toc_start_u32 = APP_LOAD_ADDRESS+BOOT_DELAY_ADDRESS+8;
+	const image_toc_start_t *toc_start = (const image_toc_start_t *)toc_start_u32;
+	const image_toc_entry_t *entry = (image_toc_entry_t *)(toc_start_u32 + sizeof(image_toc_start_t));
+	int i = 0;
 
-size_t get_app_len(void)
-{
-	const struct meta_data *meta_data_ptr= (const struct meta_data *)APP_MEM_AREA_START;
-	return meta_data_ptr->app_len;
-}
+	if (toc_start->magic == TOC_START_MAGIC &&
+		toc_start->version <= TOC_VERSION) {
 
-uint8_t* get_app_signature(void){
+		/* Count the entries in TOC */
+		while (i < MAX_TOC_ENTRIES &&
+			   (uint32_t)&entry[i] <= APP_LOAD_ADDRESS + board_info.fw_size - sizeof(uint32_t) &&
+			   *(uint32_t *)&entry[i] != TOC_END_MAGIC) {
+			i++;
+		}
 
-	struct meta_data *meta_data_ptr= (struct meta_data *)APP_MEM_AREA_START;
-	return meta_data_ptr->signature;
-}
-
-bool verifyApp(const size_t max_appl_len)
-{
-	bool ret = false;
-	volatile uint8_t *app_signature_ptr = NULL;
-
-	volatile size_t len = get_app_len();
-
-	if (len > max_appl_len ){
-		return false;
+		/* If start and end markers found and are in limits and the
+		 * first app (containing the TOC) is within flashable area,
+		 * return the first entry and the number of entries */
+		if (i<=MAX_TOC_ENTRIES &&
+			(uint32_t)entry[0].start == APP_LOAD_ADDRESS &&
+			(uint32_t)entry[0].end <= (APP_LOAD_ADDRESS + board_info.fw_size - sizeof(uint32_t))) {
+			*toc_entries = entry;
+			*len = i;
+			return true;
+		}
 	}
 
-	app_signature_ptr = get_app_signature();
-
-	if( crypto_check((const uint8_t *)app_signature_ptr, public_key, (const uint8_t *)APP_LOAD_ADDRESS, len) == 0 ){
-		ret = true;
-	}
-
-	return ret;
+	*toc_entries = NULL;
+	*len = 0;
+	return false;
 }
